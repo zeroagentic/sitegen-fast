@@ -29,6 +29,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 
 const ASCII_ONLY = /^[\x00-\x7f]*$/;
 const MARKS_G = /\p{M}/gu;
+const NON_SLUG_G = /[^a-z0-9]+/g;
 
 /**
  * The slug of `text`: NFKD, combining marks dropped, A-Z lowered, every run of characters other than a-z and 0-9 one
@@ -36,6 +37,18 @@ const MARKS_G = /\p{M}/gu;
  */
 function slugify(text) {
   const plain = ASCII_ONLY.test(text) ? text : text.normalize('NFKD').replace(MARKS_G, '');
+  if (ASCII_ONLY.test(plain)) {
+    // Every character is ASCII, where "other than a-z and 0-9" is exactly the regex's class: one pass, lowered.
+    let fast = plain.toLowerCase().replace(NON_SLUG_G, '-');
+    if (fast.charCodeAt(0) === 45) fast = fast.slice(1);
+    if (fast.length === 0) return 'untitled';
+    if (fast.charCodeAt(fast.length - 1) === 45) fast = fast.slice(0, -1);
+    if (fast.length > SLUG_MAX) {
+      fast = fast.slice(0, SLUG_MAX);
+      while (fast.length > 0 && fast.charCodeAt(fast.length - 1) === 45) fast = fast.slice(0, -1);
+    }
+    return fast;
+  }
   let out = '';
   let gap = false;
   for (let i = 0; i < plain.length; i++) {
