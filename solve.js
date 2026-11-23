@@ -185,36 +185,55 @@ function valueOf(key, raw) {
 
 const KEY_RE = /^[a-z_]+$/;
 
+const FM_OPEN = '---\n';
+const FM_CLOSE_AT_START = '---';
+
 /** A source's front matter and body: { data, body }, or { error } with the first reason it is refused. */
 function parseFrontMatter(text) {
-  const lines = text.split('\n');
-  if (lines[0] !== '---') return { error: 'no front matter' };
-  let close = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i] === '---') {
-      close = i;
+  const firstNl = text.indexOf('\n');
+  const firstLine = firstNl === -1 ? text : text.slice(0, firstNl);
+  if (firstLine !== '---') return { error: 'no front matter' };
+  if (firstNl === -1) return { error: 'the front matter is not closed' };
+  // Find the closing "---" line without splitting the whole file: a "\n---" that ends a line.
+  let closeAt = -1;
+  let search = firstNl;
+  for (;;) {
+    const at = text.indexOf('\n---', search);
+    if (at === -1) break;
+    const after = at + 4;
+    if (after === text.length || text.charCodeAt(after) === 10) {
+      closeAt = at;
       break;
     }
+    search = at + 1;
   }
-  if (close === -1) return { error: 'the front matter is not closed' };
+  if (closeAt === -1) return { error: 'the front matter is not closed' };
   const data = {};
-  for (let i = 1; i < close; i++) {
-    const line = lines[i];
+  let lineStart = firstNl + 1;
+  let lineNo = 2;
+  while (lineStart <= closeAt) {
+    let lineEnd = text.indexOf('\n', lineStart);
+    if (lineEnd === -1 || lineEnd > closeAt) lineEnd = closeAt;
+    const line = text.slice(lineStart, lineEnd);
+    lineStart = lineEnd + 1;
+    const at = lineNo++;
     if (line === '' || isBlank(line) || line.charCodeAt(0) === 35) continue;
     const colon = line.indexOf(':');
-    if (colon === -1) return { error: `line ${i + 1} is not "key: value"` };
+    if (colon === -1) return { error: `line ${at} is not "key: value"` };
     const key = line.slice(0, colon);
-    if (!KEY_RE.test(key)) return { error: `line ${i + 1} is not "key: value"` };
+    if (!KEY_RE.test(key)) return { error: `line ${at} is not "key: value"` };
     let raw;
     if (colon === line.length - 1) raw = '';
     else {
-      if (line.charCodeAt(colon + 1) !== 32) return { error: `line ${i + 1} is not "key: value"` };
+      if (line.charCodeAt(colon + 1) !== 32) return { error: `line ${at} is not "key: value"` };
       raw = line.slice(colon + 2);
-      while (raw.length > 0) {
-        const c = raw.charCodeAt(raw.length - 1);
-        if (c === 32 || c === 9) raw = raw.slice(0, -1);
+      let endRaw = raw.length;
+      while (endRaw > 0) {
+        const c = raw.charCodeAt(endRaw - 1);
+        if (c === 32 || c === 9) endRaw--;
         else break;
       }
+      if (endRaw !== raw.length) raw = raw.slice(0, endRaw);
     }
     if (KEYS.indexOf(key) === -1) return { error: `unknown key "${key}"` };
     if (Object.hasOwn(data, key)) return { error: `key "${key}" is given twice` };
@@ -224,7 +243,7 @@ function parseFrontMatter(text) {
     data[key] = v.value;
   }
   if (!Object.hasOwn(data, 'title')) return { error: 'no title' };
-  return { data, body: lines.slice(close + 1).join('\n') };
+  return { data, body: closeAt + 4 >= text.length ? '' : text.slice(closeAt + 5) };
 }
 
 // ---------------------------------------------------------------- Markdown
@@ -676,6 +695,13 @@ function truthy(v) {
   return v !== undefined && v !== null && v !== false && v !== '' && v !== 0;
 }
 
+/** A value as text with HTML escaping: a string escaped straight, anything else as textOf would write it. */
+function escText(v) {
+  if (typeof v === 'string') return v.replace(ESC_G, escCb);
+  const t = textOf(v);
+  return t === '' ? '' : t.replace(ESC_G, escCb);
+}
+
 /** A value's own property, as a path's step reads it (undefined off a null, or a name the value does not own). */
 function gv(o, k) {
   return o !== null && typeof o === 'object' && Object.hasOwn(o, k) ? o[k] : undefined;
@@ -743,7 +769,7 @@ function pathExpr(path, state) {
   }
   if (expr === null) {
     if (!ROOT_NAMES.has(first)) return 'void 0';
-    expr = `gv(v,"${first}")`;
+    expr = state.rootExpr(first);
   }
   for (let k = 1; k < path.length; k++) expr = `gv(${expr},"${path[k]}")`;
   return expr;
@@ -761,7 +787,7 @@ function genNodes(nodes, state) {
       continue;
     }
     if (n.kind === 'var') {
-      code += `o+=esc(tOf(${pathExpr(n.path, state)}));`;
+      code += `o+=esct(${pathExpr(n.path, state)});`;
       continue;
     }
     if (n.kind === 'raw') {
@@ -806,10 +832,25 @@ function compiled(name, templates) {
   if (nodes !== undefined) {
     try {
       const expanded = expandIncludes(nodes, templates, 0, { left: EXPAND_LIMIT });
-      const state = { bindings: [], uid: 0 };
+      const roots = new Map();
+      const state = {
+        bindings: [],
+        uid: 0,
+        rootExpr(first) {
+          let local = roots.get(first);
+          if (local === undefined) {
+            local = `r${roots.size}`;
+            roots.set(first, local);
+          }
+          return local;
+        },
+      };
       const body = genNodes(expanded, state);
-      fn = new Function('v', 'esc', 'tOf', 'tr', 'gv', `var o="";${body}return o;`);
-      fn = fn.bind(null) && ((f) => (vars) => f(vars, escapeHtml, textOf, truthy, gv))(fn);
+      let prelude = '';
+      for (const [name, local] of roots) prelude += `var ${local}=gv(v,"${name}");`;
+      const f = new Function('v', 'esct', 'tOf', 'tr', 'gv', `var o="";${prelude}${body}return o;`);
+      const run = (vars) => f(vars, escText, textOf, truthy, gv);
+      fn = run;
     } catch (err) {
       fn = null;
     }
