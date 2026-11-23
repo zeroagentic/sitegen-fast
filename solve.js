@@ -93,6 +93,23 @@ function wordsOf(text) {
   return count;
 }
 
+/** The words of one line: its runs of characters other than whitespace (a line holds no newline, so this sums to a body's count). */
+function wordsInLine(text) {
+  let count = 0;
+  let inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    let space = c === 32 || (c >= 9 && c <= 13);
+    if (!space && c > 127) space = c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+    if (space) inWord = false;
+    else if (!inWord) {
+      inWord = true;
+      count++;
+    }
+  }
+  return count;
+}
+
 /** JavaScript's \s, by code unit. */
 function isSpaceCode(c) {
   if (c === 32 || (c >= 9 && c <= 13)) return true;
@@ -496,6 +513,8 @@ function renderMarkdown(src, env) {
   const lines = src.split('\n');
   let i = 0;
   const len = lines.length;
+  let words = 0;
+  for (let k = 0; k < len; k++) words += wordsInLine(lines[k]);
   while (i < len) {
     const line = lines[i];
     if (isBlank(line)) {
@@ -571,7 +590,7 @@ function renderMarkdown(src, env) {
     if (excerpt === null) excerpt = inner;
     html += `<p>${inner}</p>\n`;
   }
-  return { html, toc, excerpt: excerpt ?? '' };
+  return { html, toc, excerpt: excerpt ?? '', words };
 }
 
 // ---------------------------------------------------------------- templates
@@ -1008,6 +1027,7 @@ export function build(input) {
     s.html = md.html;
     s.toc = md.toc;
     s.excerpt = md.excerpt;
+    s.words = md.words;
   }
 
   // 5. the posts, newest first and then by slug
@@ -1081,7 +1101,7 @@ export function build(input) {
         date_long: s.data.date === undefined ? '' : longDate(s.data.date),
         summary: s.data.summary ?? '',
         excerpt: s.excerpt,
-        reading_minutes: Math.max(1, Math.ceil(wordsOf(s.body) / 200)),
+        reading_minutes: Math.max(1, Math.ceil(s.words / 200)),
         tags: s.tagRefs.map((t) => ({ name: t.name, slug: t.slug, url: t.url })),
       };
     }
