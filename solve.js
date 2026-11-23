@@ -93,23 +93,6 @@ function wordsOf(text) {
   return count;
 }
 
-/** The words of one line: its runs of characters other than whitespace (a line holds no newline, so this sums to a body's count). */
-function wordsInLine(text) {
-  let count = 0;
-  let inWord = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    let space = c === 32 || (c >= 9 && c <= 13);
-    if (!space && c > 127) space = c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
-    if (space) inWord = false;
-    else if (!inWord) {
-      inWord = true;
-      count++;
-    }
-  }
-  return count;
-}
-
 /** JavaScript's \s, by code unit. */
 function isSpaceCode(c) {
   if (c === 32 || (c >= 9 && c <= 13)) return true;
@@ -510,11 +493,10 @@ function renderMarkdown(src, env) {
   let html = '';
   const toc = [];
   let excerpt = null;
+  const words = wordsOf(src);
   const lines = src.split('\n');
   let i = 0;
   const len = lines.length;
-  let words = 0;
-  for (let k = 0; k < len; k++) words += wordsInLine(lines[k]);
   while (i < len) {
     const line = lines[i];
     if (isBlank(line)) {
